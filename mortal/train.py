@@ -11,7 +11,7 @@ def train():
     from os import path
     from datetime import datetime
     from itertools import chain
-    from torch import optim, nn
+    from torch import optim
     from torch.amp import GradScaler
     from torch.nn.utils import clip_grad_norm_
     from torch.utils.data import DataLoader
@@ -31,6 +31,7 @@ def train():
         save_training_state,
         write_train_metrics,
     )
+    from training_losses import TrainingLossComputer, accumulate_loss_stats
     from libriichi.consts import obs_shape
     from config import config
 
@@ -125,8 +126,11 @@ def train():
         steps = state['steps']
 
     optimizer.zero_grad(set_to_none=True)
-    mse = nn.MSELoss()
-    ce = nn.CrossEntropyLoss()
+    loss_computer = TrainingLossComputer(
+        min_q_weight = min_q_weight,
+        next_rank_weight = next_rank_weight,
+        online = online,
+    )
 
     if device.type == 'cuda':
         logging.info(f'device: {device} ({torch.cuda.get_device_name(device)})')
@@ -207,35 +211,31 @@ def train():
             player_ranks = player_ranks.to(dtype=torch.int64, device=device)
             assert masks[range(batch_size), actions].all()
 
-            q_target_mc = gamma ** steps_to_done * kyoku_rewards
-            q_target_mc = q_target_mc.to(torch.float32)
-
-            with torch.autocast(device.type, enabled=enable_amp):
-                phi = mortal(obs)
-                q_out = dqn(phi, masks)
-                q = q_out[range(batch_size), actions]
-                dqn_loss = 0.5 * mse(q, q_target_mc)
-                cql_loss = 0
-                if not online:
-                    cql_loss = q_out.logsumexp(-1).mean() - q.mean()
-
-                next_rank_logits, = aux_net(phi)
-                next_rank_loss = ce(next_rank_logits, player_ranks)
-
-                loss = sum((
-                    dqn_loss,
-                    cql_loss * min_q_weight,
-                    next_rank_loss * next_rank_weight,
-                ))
-            scaler.scale(loss / opt_step_every).backward()
+            outputs = loss_computer.compute(
+                mortal = mortal,
+                dqn = dqn,
+                aux_net = aux_net,
+                obs = obs,
+                actions = actions,
+                masks = masks,
+                steps_to_done = steps_to_done,
+                kyoku_rewards = kyoku_rewards,
+                player_ranks = player_ranks,
+                gamma = gamma,
+                device = device,
+                enable_amp = enable_amp,
+            )
+            scaler.scale(outputs.loss / opt_step_every).backward()
 
             with torch.inference_mode():
-                stats['dqn_loss'] += dqn_loss
-                if not online:
-                    stats['cql_loss'] += cql_loss
-                stats['next_rank_loss'] += next_rank_loss
-                all_q[idx] = q
-                all_q_target[idx] = q_target_mc
+                accumulate_loss_stats(
+                    stats = stats,
+                    outputs = outputs,
+                    all_q = all_q,
+                    all_q_target = all_q_target,
+                    idx = idx,
+                    online = online,
+                )
 
             steps += 1
             idx += 1
