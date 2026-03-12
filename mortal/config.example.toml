@@ -64,6 +64,22 @@ score_scale = 1000.0
 # only used by "hybrid"
 raw_score_weight = 0.2
 
+[sampling]
+# options: "uniform", "action_bucket"
+type = "uniform"
+
+[sampling.bucket_weights]
+tile_select = 1.0
+pass = 1.0
+riichi = 1.0
+chi_low = 1.0
+chi_mid = 1.0
+chi_high = 1.0
+pon = 1.0
+kan = 1.0
+agari = 1.0
+ryukyoku = 1.0
+
 [resnet]
 conv_channels = 192
 num_blocks = 40

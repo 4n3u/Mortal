@@ -4,6 +4,7 @@ import numpy as np
 from torch.utils.data import IterableDataset
 from libriichi.dataset import GameplayLoader
 from reward_provider import build_reward_provider, extract_grp_arrays
+from sampling import build_sampler
 from config import config
 
 class FileDatasetsIter(IterableDataset):
@@ -38,6 +39,7 @@ class FileDatasetsIter(IterableDataset):
     def build_iter(self):
         # do not put it in __init__, it won't work on Windows
         self.reward_provider = build_reward_provider(config)
+        self.sampler = build_sampler(config, self.oracle)
 
         for _ in range(self.num_epochs):
             yield from self.load_files(self.augmented_first)
@@ -67,10 +69,11 @@ class FileDatasetsIter(IterableDataset):
                 continue
 
             random.shuffle(self.buffer)
-            yield from self.buffer[reserved_size:]
+            sampled = self.sampler.resample_buffer(self.buffer[reserved_size:])
+            yield from sampled
             del self.buffer[reserved_size:]
         random.shuffle(self.buffer)
-        yield from self.buffer
+        yield from self.sampler.resample_buffer(self.buffer)
         self.buffer.clear()
 
     def populate_buffer(self, file_list):
