@@ -74,6 +74,13 @@ min_q_weight = 5
 [aux]
 next_rank_weight = 0.2
 
+[oracle_guiding]
+enabled = false
+oracle_dqn_weight = 1.0
+oracle_aux_weight = 0.2
+alignment_weight = 0.05
+detach_target = true
+
 [freeze_bn]
 # `true` in online training
 mortal = false

@@ -21,6 +21,7 @@ def train():
     from dataloader import FileDatasetsIter, worker_init_fn
     from lr_scheduler import LinearWarmUpCosineAnnealingLR
     from model import Brain, DQN, AuxNet
+    from oracle_guiding import OracleGuidingConfig
     from training_data import build_offline_file_list, load_player_names
     from training_hooks import (
         build_training_state,
@@ -46,6 +47,7 @@ def train():
     test_games = config['test_play']['games']
     min_q_weight = config['cql']['min_q_weight']
     next_rank_weight = config['aux']['next_rank_weight']
+    oracle_guiding = OracleGuidingConfig.from_config(config)
     assert save_every % opt_step_every == 0
     assert test_every % save_every == 0
 
@@ -70,7 +72,11 @@ def train():
     mortal = Brain(version=version, **config['resnet']).to(device)
     dqn = DQN(version=version).to(device)
     aux_net = AuxNet((4,)).to(device)
-    all_models = (mortal, dqn, aux_net)
+    oracle_mortal = None
+    if oracle_guiding.enabled:
+        oracle_mortal = Brain(version=version, is_oracle=True, **config['resnet']).to(device)
+
+    all_models = (mortal, dqn, aux_net) if oracle_mortal is None else (mortal, dqn, aux_net, oracle_mortal)
     if enable_compile:
         for m in all_models:
             m.compile()
@@ -80,8 +86,12 @@ def train():
     logging.info(f'mortal params: {parameter_count(mortal):,}')
     logging.info(f'dqn params: {parameter_count(dqn):,}')
     logging.info(f'aux params: {parameter_count(aux_net):,}')
+    if oracle_mortal is not None:
+        logging.info(f'oracle mortal params: {parameter_count(oracle_mortal):,}')
 
     mortal.freeze_bn(config['freeze_bn']['mortal'])
+    if oracle_mortal is not None:
+        oracle_mortal.freeze_bn(config['freeze_bn']['mortal'])
 
     decay_params = []
     no_decay_params = []
@@ -124,12 +134,15 @@ def train():
         scaler.load_state_dict(state['scaler'])
         best_perf = state['best_perf']
         steps = state['steps']
+        if oracle_mortal is not None and 'oracle_mortal' in state:
+            oracle_mortal.load_state_dict(state['oracle_mortal'])
 
     optimizer.zero_grad(set_to_none=True)
     loss_computer = TrainingLossComputer(
         min_q_weight = min_q_weight,
         next_rank_weight = next_rank_weight,
         online = online,
+        oracle_guiding = oracle_guiding,
     )
 
     if device.type == 'cuda':
@@ -147,6 +160,12 @@ def train():
         'cql_loss': 0,
         'next_rank_loss': 0,
     }
+    if oracle_guiding.enabled:
+        stats.update({
+            'oracle_dqn_loss': 0,
+            'oracle_aux_loss': 0,
+            'oracle_alignment_loss': 0,
+        })
     all_q = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
     all_q_target = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
     idx = 0
@@ -173,6 +192,7 @@ def train():
             version = version,
             file_list = file_list,
             pts = pts,
+            oracle = oracle_guiding.enabled,
             file_batch_size = file_batch_size,
             reserve_ratio = reserve_ratio,
             player_names = player_names,
@@ -190,6 +210,7 @@ def train():
         ))
 
         remaining_obs = []
+        remaining_invisible_obs = []
         remaining_actions = []
         remaining_masks = []
         remaining_steps_to_done = []
@@ -198,12 +219,14 @@ def train():
         remaining_bs = 0
         pb = tqdm(total=save_every, desc='TRAIN', initial=steps % save_every)
 
-        def train_batch(obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks):
+        def train_batch(obs, invisible_obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks):
             nonlocal steps
             nonlocal idx
             nonlocal pb
 
             obs = obs.to(dtype=torch.float32, device=device)
+            if invisible_obs is not None:
+                invisible_obs = invisible_obs.to(dtype=torch.float32, device=device)
             actions = actions.to(dtype=torch.int64, device=device)
             masks = masks.to(dtype=torch.bool, device=device)
             steps_to_done = steps_to_done.to(dtype=torch.int64, device=device)
@@ -215,7 +238,9 @@ def train():
                 mortal = mortal,
                 dqn = dqn,
                 aux_net = aux_net,
+                oracle_mortal = oracle_mortal,
                 obs = obs,
+                invisible_obs = invisible_obs,
                 actions = actions,
                 masks = masks,
                 steps_to_done = steps_to_done,
@@ -283,6 +308,7 @@ def train():
                     steps = steps,
                     best_perf = best_perf,
                     config = config,
+                    extra_state = None if oracle_mortal is None else {'oracle_mortal': oracle_mortal.state_dict()},
                 )
                 save_training_state(state = state, state_file = state_file)
 
@@ -319,10 +345,17 @@ def train():
                         sys.exit(0)
                 pb = tqdm(total=save_every, desc='TRAIN')
 
-        for obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks in data_loader:
+        for batch in data_loader:
+            if oracle_guiding.enabled:
+                obs, invisible_obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks = batch
+            else:
+                obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks = batch
+                invisible_obs = None
             bs = obs.shape[0]
             if bs != batch_size:
                 remaining_obs.append(obs)
+                if invisible_obs is not None:
+                    remaining_invisible_obs.append(invisible_obs)
                 remaining_actions.append(actions)
                 remaining_masks.append(masks)
                 remaining_steps_to_done.append(steps_to_done)
@@ -330,11 +363,12 @@ def train():
                 remaining_player_ranks.append(player_ranks)
                 remaining_bs += bs
                 continue
-            train_batch(obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks)
+            train_batch(obs, invisible_obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks)
 
         remaining_batches = remaining_bs // batch_size
         if remaining_batches > 0:
             obs = torch.cat(remaining_obs, dim=0)
+            invisible_obs = torch.cat(remaining_invisible_obs, dim=0) if remaining_invisible_obs else None
             actions = torch.cat(remaining_actions, dim=0)
             masks = torch.cat(remaining_masks, dim=0)
             steps_to_done = torch.cat(remaining_steps_to_done, dim=0)
@@ -345,6 +379,7 @@ def train():
             while end <= remaining_bs:
                 train_batch(
                     obs[start:end],
+                    invisible_obs[start:end] if invisible_obs is not None else None,
                     actions[start:end],
                     masks[start:end],
                     steps_to_done[start:end],

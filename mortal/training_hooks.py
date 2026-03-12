@@ -21,14 +21,14 @@ def write_train_metrics(
     steps: int,
     online: bool,
 ) -> None:
+    for key, value in stats.items():
+        if online and key == "cql_loss":
+            continue
+        writer.add_scalar(f"loss/{key}", value / save_every, steps)
+
     # downsample to reduce tensorboard event size
     all_q_1d = all_q.cpu().numpy().flatten()[::128]
     all_q_target_1d = all_q_target.cpu().numpy().flatten()[::128]
-
-    writer.add_scalar("loss/dqn_loss", stats["dqn_loss"] / save_every, steps)
-    if not online:
-        writer.add_scalar("loss/cql_loss", stats["cql_loss"] / save_every, steps)
-    writer.add_scalar("loss/next_rank_loss", stats["next_rank_loss"] / save_every, steps)
     writer.add_scalar("hparam/lr", scheduler.get_last_lr()[0], steps)
     writer.add_histogram("q_predicted", all_q_1d, steps)
     writer.add_histogram("q_target", all_q_target_1d, steps)
@@ -56,8 +56,9 @@ def build_training_state(
     steps: int,
     best_perf: dict,
     config: dict,
+    extra_state: dict | None = None,
 ) -> dict:
-    return {
+    state = {
         "mortal": mortal.state_dict(),
         "current_dqn": dqn.state_dict(),
         "aux_net": aux_net.state_dict(),
@@ -69,6 +70,9 @@ def build_training_state(
         "best_perf": best_perf,
         "config": config,
     }
+    if extra_state:
+        state.update(extra_state)
+    return state
 
 
 def save_training_state(*, state: dict, state_file: str) -> None:
