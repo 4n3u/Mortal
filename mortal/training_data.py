@@ -31,11 +31,13 @@ def load_player_names(player_name_files: list[str]) -> list[str]:
 
 def build_offline_file_list(dataset_cfg: dict, player_names: list[str]) -> list[str]:
     file_index = dataset_cfg["file_index"]
+    max_files = int(dataset_cfg.get("max_files", 0))
     meta = {
         "index_version": INDEX_VERSION,
         "globs": list(dataset_cfg["globs"]),
         "sources": normalize_sources(dataset_cfg.get("sources")),
         "player_names_fingerprint": fingerprint_player_names(player_names),
+        "max_files": max_files,
     }
 
     if path.exists(file_index):
@@ -74,6 +76,9 @@ def build_offline_file_list(dataset_cfg: dict, player_names: list[str]) -> list[
         file_list = filtered
 
     file_list.sort(reverse=True)
+    if max_files > 0:
+        file_list = file_list[:max_files]
+        logging.info(f"truncated file list to max_files={max_files:,}")
     torch.save({"meta": meta, "file_list": file_list}, file_index)
     return file_list
 
