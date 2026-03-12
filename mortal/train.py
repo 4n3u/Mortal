@@ -11,7 +11,7 @@ def train():
     from os import path
     from datetime import datetime
     from itertools import chain
-    from torch import optim
+    from torch import optim, nn
     from torch.amp import GradScaler
     from torch.nn.utils import clip_grad_norm_
     from torch.utils.data import DataLoader
