@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
         help="Parent directory for experiment runs.",
     )
     parser.add_argument(
+        "--shared-file-index",
+        type=Path,
+        help="Optional shared dataset.file_index path to reuse across experiments.",
+    )
+    parser.add_argument(
         "--set",
         dest="overrides",
         action="append",
@@ -125,7 +130,7 @@ def build_run_dir(run_root: Path, experiment_name: str) -> Path:
     return run_root / f"{timestamp}_{sanitize_name(experiment_name)}"
 
 
-def apply_default_run_paths(config: dict, run_dir: Path) -> None:
+def apply_default_run_paths(config: dict, run_dir: Path, shared_file_index: Path | None) -> None:
     checkpoints_dir = run_dir / "checkpoints"
     tensorboard_dir = run_dir / "tensorboard"
     indices_dir = run_dir / "indices"
@@ -141,7 +146,10 @@ def apply_default_run_paths(config: dict, run_dir: Path) -> None:
     set_nested(config, "control.state_file", str(checkpoints_dir / "mortal.pth"))
     set_nested(config, "control.best_state_file", str(checkpoints_dir / "best.pth"))
     set_nested(config, "control.tensorboard_dir", str(tensorboard_dir))
-    set_nested(config, "dataset.file_index", str(indices_dir / "file_index.pth"))
+    if shared_file_index is None:
+        set_nested(config, "dataset.file_index", str(indices_dir / "file_index.pth"))
+    else:
+        set_nested(config, "dataset.file_index", str(shared_file_index.resolve()))
 
     if "test_play" in config:
         set_nested(config, "test_play.log_dir", str(logs_dir / "test_play"))
@@ -191,7 +199,7 @@ def main() -> None:
         raise SystemExit(f"run directory already exists: {run_dir}")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    apply_default_run_paths(config, run_dir)
+    apply_default_run_paths(config, run_dir, args.shared_file_index)
 
     parsed_overrides: dict[str, object] = {}
     for raw_override in args.overrides:

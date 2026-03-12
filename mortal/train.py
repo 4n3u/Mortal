@@ -225,6 +225,7 @@ def train():
             nonlocal steps
             nonlocal idx
             nonlocal pb
+            nonlocal best_perf
 
             obs = obs.to(dtype=torch.float32, device=device)
             if invisible_obs is not None:

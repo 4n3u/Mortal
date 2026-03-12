@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from torch.utils.data import IterableDataset
 from libriichi.dataset import GameplayLoader
+from log_ingest import open_log_text, normalize_for_gameplay_loader
 from reward_provider import build_reward_provider, extract_grp_arrays
 from sampling import build_sampler
 from config import config
@@ -77,7 +78,14 @@ class FileDatasetsIter(IterableDataset):
         self.buffer.clear()
 
     def populate_buffer(self, file_list):
-        data = self.loader.load_gz_log_files(file_list)
+        data = []
+        for filename in file_list:
+            try:
+                raw_log = open_log_text(filename)
+                normalized_log, _ = normalize_for_gameplay_loader(raw_log, path=filename)
+                data.append(self.loader.load_log(normalized_log))
+            except Exception as exc:
+                raise RuntimeError(f"error when reading {filename}") from exc
         for file in data:
             for game in file:
                 # per move
