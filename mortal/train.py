@@ -22,6 +22,15 @@ def train():
     from lr_scheduler import LinearWarmUpCosineAnnealingLR
     from model import Brain, DQN, AuxNet
     from training_data import build_offline_file_list, load_player_names
+    from training_hooks import (
+        build_training_state,
+        log_total_steps,
+        reset_loss_stats,
+        run_test_play_evaluation,
+        save_best_checkpoint,
+        save_training_state,
+        write_train_metrics,
+    )
     from libriichi.consts import obs_shape
     from config import config
 
@@ -152,8 +161,7 @@ def train():
             file_list = build_offline_file_list(config['dataset'], player_names)
         logging.info(f'file list size: {len(file_list):,}')
 
-        before_next_test_play = (test_every - steps % test_every) % test_every
-        logging.info(f'total steps: {steps:,} (~{before_next_test_play:,})')
+        log_total_steps(test_every = test_every, steps = steps)
 
         if num_workers > 1:
             random.shuffle(file_list)
@@ -249,109 +257,60 @@ def train():
             if steps % save_every == 0:
                 pb.close()
 
-                # downsample to reduce tensorboard event size
-                all_q_1d = all_q.cpu().numpy().flatten()[::128]
-                all_q_target_1d = all_q_target.cpu().numpy().flatten()[::128]
+                write_train_metrics(
+                    writer = writer,
+                    stats = stats,
+                    save_every = save_every,
+                    scheduler = scheduler,
+                    all_q = all_q,
+                    all_q_target = all_q_target,
+                    steps = steps,
+                    online = online,
+                )
 
-                writer.add_scalar('loss/dqn_loss', stats['dqn_loss'] / save_every, steps)
-                if not online:
-                    writer.add_scalar('loss/cql_loss', stats['cql_loss'] / save_every, steps)
-                writer.add_scalar('loss/next_rank_loss', stats['next_rank_loss'] / save_every, steps)
-                writer.add_scalar('hparam/lr', scheduler.get_last_lr()[0], steps)
-                writer.add_histogram('q_predicted', all_q_1d, steps)
-                writer.add_histogram('q_target', all_q_target_1d, steps)
-                writer.flush()
-
-                for k in stats:
-                    stats[k] = 0
+                reset_loss_stats(stats)
                 idx = 0
 
-                before_next_test_play = (test_every - steps % test_every) % test_every
-                logging.info(f'total steps: {steps:,} (~{before_next_test_play:,})')
+                log_total_steps(test_every = test_every, steps = steps)
 
-                state = {
-                    'mortal': mortal.state_dict(),
-                    'current_dqn': dqn.state_dict(),
-                    'aux_net': aux_net.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict(),
-                    'scaler': scaler.state_dict(),
-                    'steps': steps,
-                    'timestamp': datetime.now().timestamp(),
-                    'best_perf': best_perf,
-                    'config': config,
-                }
-                torch.save(state, state_file)
+                state = build_training_state(
+                    mortal = mortal,
+                    dqn = dqn,
+                    aux_net = aux_net,
+                    optimizer = optimizer,
+                    scheduler = scheduler,
+                    scaler = scaler,
+                    steps = steps,
+                    best_perf = best_perf,
+                    config = config,
+                )
+                save_training_state(state = state, state_file = state_file)
 
                 if online and steps % submit_every != 0:
                     submit_param(mortal, dqn, is_idle=False)
                     logging.info('param has been submitted')
 
                 if steps % test_every == 0:
-                    stat = test_player.test_play(test_games // 4, mortal, dqn, device)
-                    mortal.train()
-                    dqn.train()
-
-                    avg_pt = stat.avg_pt([90, 45, 0, -135]) # for display only, never used in training
-                    better = avg_pt >= best_perf['avg_pt'] and stat.avg_rank <= best_perf['avg_rank']
-                    if better:
-                        past_best = best_perf.copy()
-                        best_perf['avg_pt'] = avg_pt
-                        best_perf['avg_rank'] = stat.avg_rank
-
-                    logging.info(f'avg rank: {stat.avg_rank:.6}')
-                    logging.info(f'avg pt: {avg_pt:.6}')
-                    writer.add_scalar('test_play/avg_ranking', stat.avg_rank, steps)
-                    writer.add_scalar('test_play/avg_pt', avg_pt, steps)
-                    writer.add_scalars('test_play/ranking', {
-                        '1st': stat.rank_1_rate,
-                        '2nd': stat.rank_2_rate,
-                        '3rd': stat.rank_3_rate,
-                        '4th': stat.rank_4_rate,
-                    }, steps)
-                    writer.add_scalars('test_play/behavior', {
-                        'agari': stat.agari_rate,
-                        'houjuu': stat.houjuu_rate,
-                        'fuuro': stat.fuuro_rate,
-                        'riichi': stat.riichi_rate,
-                    }, steps)
-                    writer.add_scalars('test_play/agari_point', {
-                        'overall': stat.avg_point_per_agari,
-                        'riichi': stat.avg_point_per_riichi_agari,
-                        'fuuro': stat.avg_point_per_fuuro_agari,
-                        'dama': stat.avg_point_per_dama_agari,
-                    }, steps)
-                    writer.add_scalar('test_play/houjuu_point', stat.avg_point_per_houjuu, steps)
-                    writer.add_scalar('test_play/point_per_round', stat.avg_point_per_round, steps)
-                    writer.add_scalars('test_play/key_step', {
-                        'agari_jun': stat.avg_agari_jun,
-                        'houjuu_jun': stat.avg_houjuu_jun,
-                        'riichi_jun': stat.avg_riichi_jun,
-                    }, steps)
-                    writer.add_scalars('test_play/riichi', {
-                        'agari_after_riichi': stat.agari_rate_after_riichi,
-                        'houjuu_after_riichi': stat.houjuu_rate_after_riichi,
-                        'chasing_riichi': stat.chasing_riichi_rate,
-                        'riichi_chased': stat.riichi_chased_rate,
-                    }, steps)
-                    writer.add_scalar('test_play/riichi_point', stat.avg_riichi_point, steps)
-                    writer.add_scalars('test_play/fuuro', {
-                        'agari_after_fuuro': stat.agari_rate_after_fuuro,
-                        'houjuu_after_fuuro': stat.houjuu_rate_after_fuuro,
-                    }, steps)
-                    writer.add_scalar('test_play/fuuro_num', stat.avg_fuuro_num, steps)
-                    writer.add_scalar('test_play/fuuro_point', stat.avg_fuuro_point, steps)
-                    writer.flush()
+                    best_perf, better, past_best = run_test_play_evaluation(
+                        test_player = test_player,
+                        writer = writer,
+                        mortal = mortal,
+                        dqn = dqn,
+                        device = device,
+                        test_games = test_games,
+                        steps = steps,
+                        best_perf = best_perf,
+                    )
 
                     if better:
-                        torch.save(state, state_file)
-                        logging.info(
-                            'a new record has been made, '
-                            f'pt: {past_best["avg_pt"]:.4} -> {best_perf["avg_pt"]:.4}, '
-                            f'rank: {past_best["avg_rank"]:.4} -> {best_perf["avg_rank"]:.4}, '
-                            f'saving to {best_state_file}'
+                        state['best_perf'] = best_perf
+                        save_best_checkpoint(
+                            state = state,
+                            state_file = state_file,
+                            best_state_file = best_state_file,
+                            best_perf = best_perf,
+                            past_best = past_best,
                         )
-                        shutil.copy(state_file, best_state_file)
                     if online:
                         # BUG: This is a bug with unknown reason. When training
                         # in online mode, the process will get stuck here. This
