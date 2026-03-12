@@ -35,6 +35,8 @@ games = 3000
 log_dir = '/path/to/test_play'
 
 [dataset]
+# current recommended value: ["tenhou"]
+sources = ["tenhou"]
 globs = ['/path/to/dataset/**/*.json.gz']
 file_index = '/path/to/file_index.pth'
 file_batch_size = 15
@@ -48,6 +50,19 @@ augmented_first = false
 [env]
 gamma = 1
 pts = [6.0, 4.0, 2.0, 0.0]
+
+[reward]
+# options: "grp_delta_pt", "raw_score_delta", "hybrid"
+type = "grp_delta_pt"
+
+# only used by "grp_delta_pt" and "hybrid"
+uniform_init = false
+
+# only used by "raw_score_delta" and "hybrid"
+score_scale = 1000.0
+
+# only used by "hybrid"
+raw_score_weight = 0.2
 
 [resnet]
 conv_channels = 192

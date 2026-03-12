@@ -5,13 +5,10 @@ def train():
     import sys
     import os
     import gc
-    import gzip
-    import json
     import shutil
     import random
     import torch
     from os import path
-    from glob import glob
     from datetime import datetime
     from itertools import chain
     from torch import optim, nn
@@ -24,6 +21,7 @@ def train():
     from dataloader import FileDatasetsIter, worker_init_fn
     from lr_scheduler import LinearWarmUpCosineAnnealingLR
     from model import Brain, DQN, AuxNet
+    from training_data import build_offline_file_list, load_player_names
     from libriichi.consts import obs_shape
     from config import config
 
@@ -150,32 +148,8 @@ def train():
             dirname = drain()
             file_list = list(map(lambda p: path.join(dirname, p), os.listdir(dirname)))
         else:
-            player_names_set = set()
-            for filename in config['dataset']['player_names_files']:
-                with open(filename) as f:
-                    player_names_set.update(filtered_trimmed_lines(f))
-            player_names = list(player_names_set)
-            logging.info(f'loaded {len(player_names):,} players')
-
-            file_index = config['dataset']['file_index']
-            if path.exists(file_index):
-                index = torch.load(file_index, weights_only=True)
-                file_list = index['file_list']
-            else:
-                logging.info('building file index...')
-                file_list = []
-                for pat in config['dataset']['globs']:
-                    file_list.extend(glob(pat, recursive=True))
-                if len(player_names_set) > 0:
-                    filtered = []
-                    for filename in tqdm(file_list, unit='file'):
-                        with gzip.open(filename, 'rt') as f:
-                            start = json.loads(next(f))
-                            if not set(start['names']).isdisjoint(player_names_set):
-                                filtered.append(filename)
-                    file_list = filtered
-                file_list.sort(reverse=True)
-                torch.save({'file_list': file_list}, file_index)
+            player_names = load_player_names(config['dataset']['player_names_files'])
+            file_list = build_offline_file_list(config['dataset'], player_names)
         logging.info(f'file list size: {len(file_list):,}')
 
         before_next_test_play = (test_every - steps % test_every) % test_every

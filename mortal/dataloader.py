@@ -2,9 +2,8 @@ import random
 import torch
 import numpy as np
 from torch.utils.data import IterableDataset
-from model import GRP
-from reward_calculator import RewardCalculator
 from libriichi.dataset import GameplayLoader
+from reward_provider import build_reward_provider, extract_grp_arrays
 from config import config
 
 class FileDatasetsIter(IterableDataset):
@@ -38,10 +37,7 @@ class FileDatasetsIter(IterableDataset):
 
     def build_iter(self):
         # do not put it in __init__, it won't work on Windows
-        self.grp = GRP(**config['grp']['network'])
-        grp_state = torch.load(config['grp']['state_file'], weights_only=True, map_location=torch.device('cpu'))
-        self.grp.load_state_dict(grp_state['model'])
-        self.reward_calc = RewardCalculator(self.grp, self.pts)
+        self.reward_provider = build_reward_provider(config)
 
         for _ in range(self.num_epochs):
             yield from self.load_files(self.augmented_first)
@@ -97,12 +93,15 @@ class FileDatasetsIter(IterableDataset):
 
                 game_size = len(obs)
 
-                grp_feature = grp.take_feature()
-                rank_by_player = grp.take_rank_by_player()
-                kyoku_rewards = self.reward_calc.calc_delta_pt(player_id, grp_feature, rank_by_player)
+                grp_feature, rank_by_player, final_scores = extract_grp_arrays(grp)
+                kyoku_rewards = self.reward_provider.calc_kyoku_rewards(
+                    player_id = player_id,
+                    grp_feature = grp_feature,
+                    rank_by_player = rank_by_player,
+                    final_scores = final_scores,
+                )
                 assert len(kyoku_rewards) >= at_kyoku[-1] + 1 # usually they are equal, unless there is no action in the last kyoku
 
-                final_scores = grp.take_final_scores()
                 scores_seq = np.concatenate((grp_feature[:, 3:] * 1e4, [final_scores]))
                 rank_by_player_seq = (-scores_seq).argsort(-1, kind='stable').argsort(-1, kind='stable')
                 player_ranks = rank_by_player_seq[:, player_id]
