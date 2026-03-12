@@ -22,6 +22,7 @@ def train():
     from lr_scheduler import LinearWarmUpCosineAnnealingLR
     from model import Brain, DQN, AuxNet
     from oracle_guiding import OracleGuidingConfig
+    from sampling import ACTION_BUCKETS, count_action_buckets
     from training_data import build_offline_file_list, load_player_names
     from training_hooks import (
         build_training_state,
@@ -168,6 +169,7 @@ def train():
         })
     all_q = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
     all_q_target = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
+    action_bucket_counts = {bucket: 0 for bucket in ACTION_BUCKETS}
     idx = 0
 
     def train_epoch():
@@ -227,6 +229,7 @@ def train():
             obs = obs.to(dtype=torch.float32, device=device)
             if invisible_obs is not None:
                 invisible_obs = invisible_obs.to(dtype=torch.float32, device=device)
+            batch_action_bucket_counts = count_action_buckets(actions)
             actions = actions.to(dtype=torch.int64, device=device)
             masks = masks.to(dtype=torch.bool, device=device)
             steps_to_done = steps_to_done.to(dtype=torch.int64, device=device)
@@ -261,6 +264,8 @@ def train():
                     idx = idx,
                     online = online,
                 )
+                for bucket, count in batch_action_bucket_counts.items():
+                    action_bucket_counts[bucket] += count
 
             steps += 1
             idx += 1
@@ -291,9 +296,12 @@ def train():
                     all_q_target = all_q_target,
                     steps = steps,
                     online = online,
+                    action_bucket_counts = action_bucket_counts,
                 )
 
                 reset_loss_stats(stats)
+                for bucket in action_bucket_counts:
+                    action_bucket_counts[bucket] = 0
                 idx = 0
 
                 log_total_steps(test_every = test_every, steps = steps)

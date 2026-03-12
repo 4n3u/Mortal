@@ -20,6 +20,7 @@ def write_train_metrics(
     all_q_target: torch.Tensor,
     steps: int,
     online: bool,
+    action_bucket_counts: dict[str, int] | None = None,
 ) -> None:
     for key, value in stats.items():
         if online and key == "cql_loss":
@@ -32,6 +33,11 @@ def write_train_metrics(
     writer.add_scalar("hparam/lr", scheduler.get_last_lr()[0], steps)
     writer.add_histogram("q_predicted", all_q_1d, steps)
     writer.add_histogram("q_target", all_q_target_1d, steps)
+    if action_bucket_counts:
+        total = sum(action_bucket_counts.values())
+        if total > 0:
+            for bucket, count in action_bucket_counts.items():
+                writer.add_scalar(f"sample_mix/{bucket}", count / total, steps)
     writer.flush()
 
 

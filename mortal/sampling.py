@@ -38,6 +38,13 @@ def extract_action(entry, oracle: bool) -> int:
     return int(entry[action_idx])
 
 
+def count_action_buckets(actions) -> dict[str, int]:
+    counts = {bucket: 0 for bucket in ACTION_BUCKETS}
+    for action in actions.tolist() if hasattr(actions, "tolist") else actions:
+        counts[action_bucket(int(action))] += 1
+    return counts
+
+
 class UniformSampler:
     name = "uniform"
 
